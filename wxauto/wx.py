@@ -175,6 +175,8 @@ class WeChat(Chat, Listener):
             debug: bool=False,
             **kwargs
         ):
+        # 保存初始化参数，以便重启时使用
+        self._init_kwargs = kwargs.copy()
         hwnd = None
         if 'hwnd' in kwargs:
             hwnd = kwargs['hwnd']
@@ -197,10 +199,19 @@ class WeChat(Chat, Listener):
             chat, callback = temp_listen.get(who, (None, None))
             try:
                 if chat is None or not chat.core.exists():
-                    wxlog.debug(f"窗口 {who} 已关闭，移除监听")
-                    self.RemoveListenChat(who, close_window=False)
-                    continue
+                    wxlog.debug(f"窗口 {who} 已关闭，尝试重连")
+                    subwin = self.core.open_separate_window(who)
+                    if subwin is None:
+                        wxlog.debug(f"窗口 {who} 已关闭，移除监听")
+                        self.RemoveListenChat(who, close_window=False)
+                        continue
+                    else:
+                        wxlog.debug(f"窗口 {who} 已找到，重新开始监听")
+                        chat = Chat(subwin)
+                        self.listen[who] = (chat, callback)
             except:
+                # wxlog.debug(f"报错了 {who} 已关闭，移除监听")
+                # self.RemoveListenChat(who, close_window=False)
                 continue
             with self._lock:
                 msgs = chat.GetNewMessage()
@@ -208,7 +219,115 @@ class WeChat(Chat, Listener):
                     wxlog.debug(f"[{msg.attr} {msg.type}]获取到新消息：{who} - {msg.content}")
                     chat.Show()
                     self._safe_callback(callback, msg, chat)
-    
+    def _is_alive(self):
+        """检查微信是否存活
+        
+        Returns:
+            bool: 是否存活
+        """
+        return self.core.exists()
+
+    def Reload(self, uri: str = "C:\\Program Files\\Tencent\\WeChat\\WeChat.exe"):
+        """重启微信并重新初始化
+        Args:
+            uri (str, optional): 微信安装路径，不指定则使用当前微信进程路径
+        Returns:
+            bool: 是否重启成功
+        """
+        from .utils.win32 import GetProcessPath, KillProcess, RunApp
+        import os
+        import time
+        
+        # 停止监听
+        # self.StopListening(True)
+        
+        # 获取当前微信进程路径
+        # if uri is None:
+        #     if hasattr(self.core, 'pid'):
+        #         uri = GetProcessPath(self.core.pid)
+        #     if not uri or not os.path.exists(uri):
+        #         wxlog.debug("无法获取微信路径，重启失败")
+        #         return False
+        
+        # # 关闭当前微信进程
+        # wxlog.debug(f"正在关闭微信进程: {self.nickname}")
+        # if hasattr(self.core, 'pid'):
+        #     KillProcess(self.core.pid)
+        
+        # 等待进程完全关闭
+        # time.sleep(2)
+        
+        # 启动新的微信进程
+        wxlog.debug(f"正在启动新的微信进程: {uri}")
+        RunApp(uri)
+        
+        # 等待微信启动
+        time.sleep(5)
+        
+        # 查找微信登录窗口
+        from .utils.win32 import FindWindow, Click
+        from wxauto import uiautomation as uia
+        
+        login_hwnd = FindWindow(classname="WeChatLoginWndForPC")
+        if login_hwnd:
+            wxlog.debug("找到微信登录窗口，尝试自动登录")
+            
+            # 获取登录窗口的UI控件
+            login_control = uia.ControlFromHandle(login_hwnd)
+            
+            # 尝试查找并点击"进入微信"按钮
+            enter_button = login_control.ButtonControl(Name="进入微信")
+            if enter_button.Exists():
+                wxlog.debug("找到'进入微信'按钮，点击进入")
+                enter_button.Click()
+                time.sleep(15)  # 等待进入主界面
+            else:
+                # 如果没有"进入微信"按钮，可能需要扫码登录
+                wxlog.debug("未找到'进入微信'按钮，可能需要扫码登录")
+                qrcode_control = login_control.ImageControl()
+                if qrcode_control.Exists():
+                    wxlog.debug("检测到二维码，请扫码登录")
+                    # 这里可以添加二维码保存或提示用户扫码的逻辑
+                    
+                    # 等待登录完成
+                    timeout = 60  # 最多等待60秒
+                    start_time = time.time()
+                    while time.time() - start_time < timeout:
+                        # 检查是否已登录（登录窗口消失）
+                        if not FindWindow(classname="WeChatLoginWndForPC"):
+                            wxlog.debug("登录成功")
+                            break
+                        time.sleep(1)
+                    else:
+                        wxlog.debug("登录超时")
+                        return False
+        
+        # 等待主窗口出现
+        main_hwnd = FindWindow(classname="WeChatMainWndForPC")
+        if not main_hwnd:
+            wxlog.debug("未找到微信主窗口，重启失败")
+            return False
+            
+        wxlog.debug("微信已成功启动并登录")
+        
+        # 重新初始化核心组件
+        self.core = WeChatMainWnd()
+        self.nickname = self.core.nickname
+        
+        temp_listen = self.listen.copy()
+        for who in temp_listen:
+            wxlog.debug(f"监听的聊天: {who}")
+            # self.RemoveListenChat(who, close_window=False)
+            # self.AddListenChat(who, temp_listen[who][1])
+
+        # 重新启动监听
+        # self._listener_start()
+        self.Show()
+        
+        wxlog.debug(f"微信已重启: {self.nickname}")
+        return True
+
+
     def GetSession(self) -> List['SessionElement']:
         """获取当前会话列表
 
@@ -338,6 +457,9 @@ class WeChat(Chat, Listener):
         while not self._listener_stop_event.is_set():
             try:
                 time.sleep(1)
+                if not self._is_alive():
+                    wxlog.debug(f'wxauto("{self.nickname}") restart')
+                    self.Reload()
             except KeyboardInterrupt:
                 wxlog.debug(f'wxauto("{self.nickname}") shutdown')
                 self.StopListening(True)

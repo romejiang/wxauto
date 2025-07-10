@@ -282,3 +282,89 @@ def IsRedPixel(uicontrol):
     bbox = (rect.left, rect.top, rect.right, rect.bottom)
     img = capture(hwnd, bbox)
     return any(p[0] > p[1] and p[0] > p[2] for p in img.getdata())
+
+def GetProcessPath(pid):
+    """
+    获取进程的可执行文件路径
+    
+    Args:
+        pid (int): 进程ID
+        
+    Returns:
+        str: 进程的可执行文件路径，如果获取失败则返回None
+    """
+    try:
+        process = psutil.Process(pid)
+        return process.exe()
+    except Exception as e:
+        print(f"获取进程路径失败: {e}")
+        return None
+
+def KillProcess(pid):
+    """
+    终止指定进程ID的进程
+    
+    Args:
+        pid (int): 要终止的进程ID
+        
+    Returns:
+        bool: 是否成功终止进程
+    """
+    try:
+        process = psutil.Process(pid)
+        process.terminate()  # 尝试正常终止
+        
+        # 给进程一些时间来正常关闭
+        gone, still_alive = psutil.wait_procs([process], timeout=3)
+        
+        # 如果进程仍然存活，强制终止
+        if still_alive:
+            for p in still_alive:
+                p.kill()
+        
+        return True
+    except Exception as e:
+        print(f"终止进程失败: {e}")
+        return False
+
+def RunApp(app_path, args=None, show_window=win32con.SW_NORMAL):
+    """
+    运行应用程序
+    
+    Args:
+        app_path (str): 应用程序路径
+        args (str, optional): 命令行参数
+        show_window (int, optional): 窗口显示方式，默认为正常显示
+        
+    Returns:
+        tuple: (进程句柄, 线程句柄, 进程ID, 线程ID)，如果启动失败则返回None
+    """
+    try:
+        # 构建命令行
+        cmd_line = f'"{app_path}"'
+        if args:
+            cmd_line += f' {args}'
+        
+        # 创建进程
+        startup_info = win32process.STARTUPINFO()
+        startup_info.dwFlags = win32process.STARTF_USESHOWWINDOW
+        startup_info.wShowWindow = show_window
+        
+        # 创建进程
+        proc_handles = win32process.CreateProcess(
+            None,               # 应用程序名称
+            cmd_line,           # 命令行
+            None,               # 进程安全属性
+            None,               # 线程安全属性
+            0,                  # 是否继承句柄
+            win32con.NORMAL_PRIORITY_CLASS,  # 创建标志
+            None,               # 新环境
+            None,               # 当前目录
+            startup_info        # 启动信息
+        )
+        
+        # 返回进程信息：(进程句柄, 线程句柄, 进程ID, 线程ID)
+        return proc_handles
+    except Exception as e:
+        print(f"启动应用程序失败: {e}")
+        return None
